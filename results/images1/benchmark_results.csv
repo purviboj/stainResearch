@@ -1,0 +1,5 @@
+image,stage,detected_count,actual_count,correct,processing_time_s,detection_status
+data/images/processed/DSC_1118.JPG,pre,1,,,0.6793,detected
+data/images/processed/DSC_1122.JPG,post,1,,,0.5307,detected
+data/images/processed/DSC_1121.JPG,pre,1,,,0.6576,detected
+data/images/processed/DSC_1124.JPG,post,1,,,0.5651,detected

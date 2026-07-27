@@ -97,9 +97,83 @@ COLOR_POST    = (0, 0, 220)
 COLOR_BOX     = (255, 180, 0)
 COLOR_ELLIPSE = (255, 100, 255)
 COLOR_TEXT    = (255, 255, 255)
+COLOR_GRID_MINOR = (230, 230, 230)
+COLOR_GRID_MAJOR = (200, 200, 200)
+
+THREE_INCHES_IN_CM = 7.62
+THREE_INCHES_IN_M = 0.0762
 
 # Reused across every image instead of being rebuilt on each call.
 _CLAHE = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_TILE_GRID)
+
+
+def _normalize_keypress(key):
+    """Convert OpenCV key codes into a lowercase single-character string."""
+    if key < 0:
+        return None
+    try:
+        return chr(key & 0xFF).lower()
+    except ValueError:
+        return None
+
+
+def px_per_cm_from_3in_distance(d_px):
+    """Convert a 3-inch pixel measurement into pixels per centimeter."""
+    return d_px / THREE_INCHES_IN_CM
+
+
+def px_per_m_from_3in_distance(d_px):
+    """Convert a 3-inch pixel measurement into pixels per meter."""
+    return d_px / THREE_INCHES_IN_M
+
+
+def draw_grid_overlay(image, px_per_cm, color=(128, 128, 128), alpha=0.25, grid_step_cm=1.0):
+    """
+    Blend a subtle centimeter grid overlay onto an image.
+    """
+    if image is None or px_per_cm is None or px_per_cm <= 1.0:
+        return image
+
+    grid_px = int(px_per_cm * grid_step_cm)
+    if grid_px <= 0:
+        return image
+
+    height, width = image.shape[:2]
+    overlay = np.zeros_like(image)
+
+    for x in range(0, width, grid_px):
+        cv2.line(overlay, (x, 0), (x, height - 1), color, 1, cv2.LINE_AA)
+
+    for y in range(0, height, grid_px):
+        cv2.line(overlay, (0, y), (width - 1, y), color, 1, cv2.LINE_AA)
+
+    return cv2.addWeighted(overlay, alpha, image, 1.0 - alpha, 0)
+
+
+def draw_cm_grid_overlay(image, px_per_cm, alpha=0.14, major_every=5):
+    """Backward-compatible wrapper for the centimeter grid overlay."""
+    if image is None or px_per_cm is None or px_per_cm <= 0:
+        return image
+
+    spacing_px = max(1, int(round(px_per_cm)))
+    height, width = image.shape[:2]
+    overlay = image.copy()
+    major_step = max(1, int(major_every))
+
+    # Draw vertical and horizontal grid lines every 1 cm.
+    for x in range(0, width, spacing_px):
+        cm_index = x // spacing_px
+        color = COLOR_GRID_MAJOR if cm_index % major_step == 0 else COLOR_GRID_MINOR
+        thickness = 1 if cm_index % major_step else 2
+        cv2.line(overlay, (x, 0), (x, height - 1), color, thickness, cv2.LINE_AA)
+
+    for y in range(0, height, spacing_px):
+        cm_index = y // spacing_px
+        color = COLOR_GRID_MAJOR if cm_index % major_step == 0 else COLOR_GRID_MINOR
+        thickness = 1 if cm_index % major_step else 2
+        cv2.line(overlay, (0, y), (width - 1, y), color, thickness, cv2.LINE_AA)
+
+    return cv2.addWeighted(overlay, alpha, image, 1.0 - alpha, 0)
 
 
 # ===========================================================================
@@ -464,11 +538,14 @@ def measure_stain(contour, px_per_cm):
     }
 
 
-def annotate_image(img, contour, metrics, label="", color=None):
-    """Draw contour, bounding box, ellipse, and measurement text on image."""
+def annotate_image(img, contour, metrics, label="", color=None, px_per_cm=None,
+                   draw_grid_overlay_enabled=False):
+    """Draw contour, bounding box, ellipse, grid, and measurement text on image."""
     color = color or COLOR_PRE
     out   = img.copy()
 
+    if draw_grid_overlay_enabled:
+        out = draw_grid_overlay(out, px_per_cm)
     cv2.drawContours(out, [contour], -1, color, 2)
 
     x, y, w, h = metrics["bbox_x"], metrics["bbox_y"], metrics["bbox_w"], metrics["bbox_h"]
@@ -494,15 +571,13 @@ def annotate_image(img, contour, metrics, label="", color=None):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(out, line, (tx, ty + i * 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, COLOR_TEXT, 1, cv2.LINE_AA)
-    # Automatically draw the 3-inch scale overlay if measurements exist
-    if metrics and metrics.get("area_m2", 0) > 0 and metrics.get("area_px", 0) > 0:
-        px_per_m = (metrics["area_px"] / metrics["area_m2"]) ** 0.5
-        out = draw_3in_reference_overlay(out, px_per_m)
+    out = draw_3in_reference_overlay(out, px_per_cm)
     return out
 
 
 def process_image(path, px_per_cm, roi=None, mode="hsv",
-                  hsv_params=None, label="", color=None):
+                  hsv_params=None, label="", color=None,
+                  draw_grid_overlay_enabled=False):
     """
     Full pipeline for one image.
     Returns (annotated_img, metrics_dict, contour) or (None, None, None) on failure.
@@ -541,7 +616,10 @@ def process_image(path, px_per_cm, roi=None, mode="hsv",
         return img, None, None
 
     metrics  = measure_stain(contour, px_per_cm)
-    annotated = annotate_image(img, contour, metrics, label=label, color=color)
+    annotated = annotate_image(
+        img, contour, metrics, label=label, color=color, px_per_cm=px_per_cm,
+        draw_grid_overlay_enabled=draw_grid_overlay_enabled
+    )
 
     return annotated, metrics, contour
 
@@ -658,7 +736,8 @@ def _make_lab_window(win_name):
     cv2.createTrackbar("MorphClose", win_name, MORPH_CLOSE_K, 30, lambda x: None)
 
 
-def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
+def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0,
+                     batch_info=None, preview_grid_overlay=False):
     """
     Launch interactive tuner with SEPARATE windows for HSV and LAB.
 
@@ -674,15 +753,17 @@ def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
     """
     img, blurred, hsv, lab = load_and_preprocess(path, roi=roi)
 
-    WIN_HSV  = "[ HSV MODE ]  M=switch | G=grid | S=save | N=next image"
-    WIN_LAB  = "[ LAB MODE ]  M=switch | G=grid | S=save | N=next image"
-    PREVIEW  = "Stain Preview  (left=detected contour | right=mask)"
+    step_label = batch_info or os.path.basename(path)
+    WIN_HSV  = f"[ HSV MODE ] [{step_label}]"
+    WIN_LAB  = f"[ LAB MODE ] [{step_label}]"
+    PREVIEW  = f"Stain Preview [{step_label}]  (left=detected contour | right=mask)"
 
     current_mode = mode
     saved_params = {}
     last_params_key = None
     last_combined = None
     grid_active = False
+    grid_overlay_active = bool(preview_grid_overlay)
     active_px_per_cm = current_px_per_cm
 
     # Open the starting window based on mode arg
@@ -733,7 +814,7 @@ def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
             )
 
         # Recompute preview if sliders moved or grid state changed.
-        params_key = tuple(sorted(saved_params.items())) + (active_px_per_cm, grid_active)
+        params_key = tuple(sorted(saved_params.items())) + (active_px_per_cm, grid_active, grid_overlay_active)
         if params_key != last_params_key:
             if saved_params["mode"] == "hsv":
                 mask = build_stain_mask_hsv(
@@ -749,7 +830,7 @@ def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
                     morph_open=saved_params["morph_open"], morph_close=saved_params["morph_close"],
                 )
 
-            preview          = img.copy()
+            preview          = draw_grid_overlay(img.copy(), active_px_per_cm) if grid_overlay_active else img.copy()
             selected_contour = get_largest_contour(mask)
             selected_mask    = np.zeros_like(mask)
             if selected_contour is not None:
@@ -768,8 +849,12 @@ def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
             label_color = (0, 255, 255) if current_mode == "hsv" else (255, 180, 0)
             
             grid_status = f"GRID: {'ON' if grid_active else 'OFF'} ({active_px_per_cm:.1f} px/cm)"
+            header_text = (
+                f"[{step_label}] MODE: {current_mode.upper()} | {grid_status} | "
+                "M=switch  G=grid  R=grid-overlay  N=next/save"
+            )
             cv2.putText(info_canvas,
-                        f"MODE: {current_mode.upper()}  |  {grid_status}  |  M=switch  G=grid  S=save  N=next image",
+                        header_text,
                         (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, label_color, 2, cv2.LINE_AA)
             combined = np.vstack([info_canvas, combined])
 
@@ -779,9 +864,9 @@ def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
             combined = last_combined
 
         cv2.imshow(PREVIEW, combined)
-        key = cv2.waitKey(30) & 0xFF
+        key = _normalize_keypress(cv2.waitKey(30))
 
-        if key == ord('m'):
+        if key == 'm':
             if current_mode == "hsv":
                 cv2.destroyWindow(WIN_HSV)
                 current_mode = "lab"
@@ -796,7 +881,7 @@ def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
                 print("[MODE SWITCH] Now using: HSV")
             last_params_key = None
 
-        elif key == ord('g'):
+        elif key == 'g':
             grid_active = not grid_active
             if grid_active:
                 gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
@@ -811,10 +896,17 @@ def interactive_tune(path, roi=None, mode="hsv", current_px_per_cm=1.0):
                 print(f"[GRID TOGGLE] Grid off. Reverted scale: {active_px_per_cm:.2f} px/cm")
             last_params_key = None
 
-        elif key == ord('s'):
+        elif key == 'r':
+            grid_overlay_active = not grid_overlay_active
+            state = "ON" if grid_overlay_active else "OFF"
+            print(f"[GRID OVERLAY] Live grid overlay {state}.")
+            last_params_key = None
+
+        elif key == 's':
             print("[SAVED PARAMS]", saved_params)
 
-        elif key == ord('q') or key == ord('n'):
+        elif key in ('q', 'n'):
+            saved_params["px_per_cm"] = active_px_per_cm
             break
 
     cv2.destroyAllWindows()
@@ -931,7 +1023,8 @@ def save_pair_outputs(output_dir, pre_path, post_path, ann_pre, ann_post,
 
 def compare_pre_post(pre_path, post_path, px_per_cm, roi=None,
                      mode="hsv", hsv_params=None, output_dir=".",
-                     ground_truth=None, manual_time_minutes=None):
+                     ground_truth=None, manual_time_minutes=None,
+                     draw_grid_overlay_enabled=False):
     """
     Run pipeline on both images, generate side-by-side comparison,
     print delta metrics, save results (deduped).
@@ -940,7 +1033,8 @@ def compare_pre_post(pre_path, post_path, px_per_cm, roi=None,
     pre_start = time.time()
     ann_pre, metrics_pre, contour_pre = process_image(
         pre_path, px_per_cm, roi=roi, mode=mode,
-        hsv_params=hsv_params, label="PRE-SCRUB", color=COLOR_PRE
+        hsv_params=hsv_params, label="PRE-SCRUB", color=COLOR_PRE,
+        draw_grid_overlay_enabled=draw_grid_overlay_enabled
     )
     pre_time = time.time() - pre_start
 
@@ -948,7 +1042,8 @@ def compare_pre_post(pre_path, post_path, px_per_cm, roi=None,
     post_start = time.time()
     ann_post, metrics_post, contour_post = process_image(
         post_path, px_per_cm, roi=roi, mode=mode,
-        hsv_params=hsv_params, label="POST-SCRUB", color=COLOR_POST
+        hsv_params=hsv_params, label="POST-SCRUB", color=COLOR_POST,
+        draw_grid_overlay_enabled=draw_grid_overlay_enabled
     )
     post_time = time.time() - post_start
 
@@ -971,7 +1066,9 @@ def compare_pre_post(pre_path, post_path, px_per_cm, roi=None,
 # ===========================================================================
 
 def run_batch(pairs_file, px_per_cm, roi=None, mode="hsv", output_dir=".",
-              tune_each=False, ground_truth=None, manual_time_minutes=None):
+              tune_each=False, ground_truth=None, manual_time_minutes=None,
+              draw_grid_overlay_enabled=False, calibrate_3in=False,
+              use_grid=False, no_gui=False):
     """Process all pre/post pairs listed in a tab-separated text file."""
     with open(pairs_file) as f:
         pairs = [line.strip().split("\t") for line in f if line.strip()]
@@ -992,16 +1089,31 @@ def run_batch(pairs_file, px_per_cm, roi=None, mode="hsv", output_dir=".",
         hsv_params_pre  = None
         hsv_params_post = None
 
+        if calibrate_3in and not use_grid:
+            if no_gui:
+                print("[CALIBRATION] --calibrate-3in requested, but --no-gui is set; skipping interactive calibration.")
+            else:
+                print(f"\n[CALIBRATION] Draw a 3-inch reference on: {pre_path}")
+                calibrated_px_per_cm = interactive_draw_3in_line(pre_path)
+                if calibrated_px_per_cm is not None:
+                    px_per_cm = calibrated_px_per_cm
+
         if tune_each:
             info_pre = f"Pair {i+1}/{len(pairs)} - PRE"
             print(f"\n[TUNER] {info_pre}: {pre_path}")
-            hsv_params_pre = interactive_tune(pre_path, roi=roi, mode=mode, current_px_per_cm=px_per_cm or 1.0, batch_info=info_pre)
+            hsv_params_pre = interactive_tune(
+                pre_path, roi=roi, mode=mode, current_px_per_cm=px_per_cm or 1.0,
+                batch_info=info_pre, preview_grid_overlay=draw_grid_overlay_enabled
+            )
             if "px_per_cm" in hsv_params_pre:
                 px_per_cm = hsv_params_pre["px_per_cm"]
 
             info_post = f"Pair {i+1}/{len(pairs)} - POST"
             print(f"\n[TUNER] {info_post}: {post_path}")
-            hsv_params_post = interactive_tune(post_path, roi=roi, mode=mode, current_px_per_cm=px_per_cm or 1.0, batch_info=info_post)
+            hsv_params_post = interactive_tune(
+                post_path, roi=roi, mode=mode, current_px_per_cm=px_per_cm or 1.0,
+                batch_info=info_post, preview_grid_overlay=draw_grid_overlay_enabled
+            )
             if "px_per_cm" in hsv_params_post:
                 px_per_cm = hsv_params_post["px_per_cm"]
 
@@ -1009,7 +1121,8 @@ def run_batch(pairs_file, px_per_cm, roi=None, mode="hsv", output_dir=".",
         pre_start = time.time()
         ann_pre, metrics_pre, contour_pre = process_image(
             pre_path, px_per_cm, roi=roi, mode=mode,
-            hsv_params=hsv_params_pre, label="PRE-SCRUB", color=COLOR_PRE
+            hsv_params=hsv_params_pre, label="PRE-SCRUB", color=COLOR_PRE,
+            draw_grid_overlay_enabled=draw_grid_overlay_enabled
         )
         pre_time = time.time() - pre_start
 
@@ -1017,7 +1130,8 @@ def run_batch(pairs_file, px_per_cm, roi=None, mode="hsv", output_dir=".",
         post_start = time.time()
         ann_post, metrics_post, contour_post = process_image(
             post_path, px_per_cm, roi=roi, mode=mode,
-            hsv_params=hsv_params_post, label="POST-SCRUB", color=COLOR_POST
+            hsv_params=hsv_params_post, label="POST-SCRUB", color=COLOR_POST,
+            draw_grid_overlay_enabled=draw_grid_overlay_enabled
         )
         post_time = time.time() - post_start
 
@@ -1064,6 +1178,9 @@ def main():
     parser.add_argument("--no-gui",     action="store_true")
     parser.add_argument("--tune-only",  action="store_true")
     parser.add_argument("--tune-each",  action="store_true")
+    parser.add_argument("--calibrate-3in", action="store_true", help="Use interactive 3-inch calibration when grid paper is not available")
+    parser.add_argument("--draw-grid-overlay", action="store_true", default=False,
+                        help="Draw a subtle 1cm grid overlay on saved output images")
     parser.add_argument("--output-dir", default=".")
     parser.add_argument("--ground-truth-csv", help="CSV with image,actual_count columns")
     parser.add_argument("--manual-time-minutes", type=float,
@@ -1085,14 +1202,11 @@ def main():
         gray = cv2.cvtColor(blurred, cv2.COLOR_BGR2GRAY)
         px_per_cm = detect_grid_spacing(gray)
 
-    # 2. Interactive 3-inch calibration line check (NEW)
-    if px_per_cm is None and not args.no_gui and args.pre and not args.batch:
-        raw_img = cv2.imread(args.pre)
-        if raw_img is not None:
-            line_px = interactive_draw_3in_line(raw_img)
-            if line_px:
-                px_per_m = scale_from_reference_line(line_px, real_world_inches=3.0)
-                px_per_cm = px_per_m / 100.0  # Convert px/m to px/cm for internal math
+    # 3-inch fallback calibration for single-image flow when grid paper is unavailable.
+    if args.calibrate_3in and not args.use_grid and args.pre and not args.batch and not args.no_gui:
+        calibrated_px_per_cm = interactive_draw_3in_line(args.pre)
+        if calibrated_px_per_cm is not None:
+            px_per_cm = calibrated_px_per_cm
 
     if px_per_cm is None and not args.use_grid:
         print("[WARNING] No px/cm calibration set. Measurements will be in pixels.")
@@ -1101,20 +1215,30 @@ def main():
     hsv_params = None
     if not args.no_gui and not args.tune_only and args.pre:
         print("\n[TUNER] Launching interactive HSV tuner. Adjust sliders, press 'n' when done.")
-        hsv_params = interactive_tune(args.pre, roi=args.roi, mode=args.mode, current_px_per_cm=px_per_cm)
+        hsv_params = interactive_tune(
+            args.pre, roi=args.roi, mode=args.mode, current_px_per_cm=px_per_cm,
+            preview_grid_overlay=args.draw_grid_overlay
+        )
         if "px_per_cm" in hsv_params:
             px_per_cm = hsv_params["px_per_cm"]
 
     if args.tune_only:
         if args.pre:
-            interactive_tune(args.pre, roi=args.roi, mode=args.mode, current_px_per_cm=px_per_cm)
+            interactive_tune(
+                args.pre, roi=args.roi, mode=args.mode, current_px_per_cm=px_per_cm,
+                preview_grid_overlay=args.draw_grid_overlay
+            )
         return
 
     if args.batch:
         run_batch(args.batch, px_per_cm, roi=args.roi,
                   mode=args.mode, output_dir=args.output_dir,
                   tune_each=args.tune_each, ground_truth=ground_truth,
-                  manual_time_minutes=args.manual_time_minutes)
+                  manual_time_minutes=args.manual_time_minutes,
+                  draw_grid_overlay_enabled=args.draw_grid_overlay,
+                  calibrate_3in=args.calibrate_3in,
+                  use_grid=args.use_grid,
+                  no_gui=args.no_gui)
         return
 
     if args.pre:
@@ -1128,6 +1252,7 @@ def main():
             output_dir=args.output_dir,
             ground_truth=ground_truth,
             manual_time_minutes=args.manual_time_minutes,
+            draw_grid_overlay_enabled=args.draw_grid_overlay,
         )
     else:
         parser.print_help()
@@ -1140,93 +1265,143 @@ if __name__ == "__main__":
 # 3-INCH REFERENCE LINE & SCALE OVERLAY
 # =====================================================================
 
-def interactive_draw_3in_line(image):
+def interactive_draw_3in_line(image_path):
     """
-    Opens an OpenCV window where the user can click and drag a 3-inch reference line.
-    Returns the pixel length of the drawn line.
+    Let the user draw a 3-inch reference line and return px_per_cm.
     """
-    line_points = []
-    drawing = False
-    temp_img = image.copy()
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Cannot read image for calibration: {image_path}")
+
+    win_name = "3-Inch Calibration (drag line, ENTER/SPACE=confirm, C=clear)"
+    state = {
+        "start": None,
+        "end": None,
+        "drawing": False,
+    }
+
+    def current_distance_px():
+        if state["start"] is None or state["end"] is None:
+            return None
+        p1 = state["start"]
+        p2 = state["end"]
+        return float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
+
+    def render():
+        frame = image.copy()
+        if state["start"] is not None and state["end"] is not None:
+            p1 = state["start"]
+            p2 = state["end"]
+            cv2.line(frame, p1, p2, (255, 255, 0), 2, cv2.LINE_AA)
+            cv2.circle(frame, p1, 5, (255, 255, 0), -1, cv2.LINE_AA)
+            cv2.circle(frame, p2, 5, (255, 255, 0), -1, cv2.LINE_AA)
+            d_px = current_distance_px()
+            if d_px is not None:
+                label = f"3.0 in ({d_px:.1f} px)"
+                midpoint = ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2)
+                text_origin = (midpoint[0] + 10, midpoint[1] - 10)
+                cv2.putText(frame, label, text_origin, cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(frame, label, text_origin, cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55, (255, 255, 0), 1, cv2.LINE_AA)
+
+        help_lines = [
+            "Drag a line across a known 3.0 in reference.",
+            "ENTER/SPACE=confirm   C=clear   ESC=cancel",
+        ]
+        for idx, line in enumerate(help_lines):
+            cv2.putText(frame, line, (20, 30 + idx * 22), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(frame, line, (20, 30 + idx * 22), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+        cv2.imshow(win_name, frame)
 
     def mouse_callback(event, x, y, flags, param):
-        nonlocal line_points, drawing, temp_img
         if event == cv2.EVENT_LBUTTONDOWN:
-            line_points = [(x, y)]
-            drawing = True
-        elif event == cv2.EVENT_MOUSEMOVE and drawing:
-            temp_img = image.copy()
-            cv2.line(temp_img, line_points[0], (x, y), (0, 255, 255), 2)
-            cv2.imshow("Draw 3-Inch Scale Line (Click & Drag, Press ENTER)", temp_img)
-        elif event == cv2.EVENT_LBUTTONUP:
-            line_points.append((x, y))
-            drawing = False
-            cv2.line(temp_img, line_points[0], line_points[1], (0, 255, 0), 2)
-            cv2.imshow("Draw 3-Inch Scale Line (Click & Drag, Press ENTER)", temp_img)
+            state["start"] = (x, y)
+            state["end"] = (x, y)
+            state["drawing"] = True
+            render()
+        elif event == cv2.EVENT_MOUSEMOVE and state["drawing"]:
+            state["end"] = (x, y)
+            render()
+        elif event == cv2.EVENT_LBUTTONUP and state["drawing"]:
+            state["end"] = (x, y)
+            state["drawing"] = False
+            render()
 
-    win_name = "Draw 3-Inch Scale Line (Click & Drag, Press ENTER)"
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(win_name, mouse_callback)
-    cv2.imshow(win_name, temp_img)
+    render()
 
-    print("[INFO] Click and drag across a 3-inch object in the photo, then press ENTER.")
     while True:
-        key = cv2.waitKey(1) & 0xFF
-        if key == 13 or key == 27:  # ENTER (13) or ESC (27)
+        key = cv2.waitKey(20) & 0xFF
+        if key in (13, 32):  # ENTER or SPACE
+            d_px = current_distance_px()
+            if d_px is not None:
+                px_per_cm = px_per_cm_from_3in_distance(d_px)
+                _ = px_per_m_from_3in_distance(d_px)
+                print(f"[CALIBRATION] 3.0 in reference set: {px_per_cm:.2f} px/cm")
+                cv2.destroyWindow(win_name)
+                return px_per_cm
+        elif key == ord("c"):
+            state["start"] = None
+            state["end"] = None
+            state["drawing"] = False
+            render()
+        elif key == 27:
             break
 
     cv2.destroyWindow(win_name)
-
-    if len(line_points) == 2:
-        p1, p2 = line_points[0], line_points[1]
-        pixel_length = float(np.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2))
-        return pixel_length
     return None
 
 
-def draw_3in_reference_overlay(image, pixels_per_meter, position=(30, 40)):
+def draw_3in_reference_overlay(image, px_per_cm, color=(0, 255, 255)):
     """
-    Draws a flat horizontal 3-inch (0.0762m) reference line with a bounding border box 
-    on the annotated image for visual verification.
+    Draw a clean cyan 3-inch scale-bar legend in the bottom-right corner.
     """
-    if pixels_per_meter is None or pixels_per_meter <= 0:
+    if image is None or px_per_cm is None or px_per_cm <= 1.0:
         return image
 
-    THREE_INCHES_IN_METERS = 3.0 * 0.0254  # 0.0762 m
-    line_px = int(THREE_INCHES_IN_METERS * pixels_per_meter)
-    
-    x, y = position
-    pad = 8
-    
-    # Draw dark background box for readability
-    cv2.rectangle(image, (x - pad, y - pad), (x + line_px + pad, y + 25), (30, 30, 30), -1)
-    
-    # Draw horizontal 3-inch line (bright cyan)
-    cv2.line(image, (x, y), (x + line_px, y), (255, 255, 0), 2)
-    
-    # Draw start/end vertical tick marks
-    cv2.line(image, (x, y - 4), (x, y + 4), (255, 255, 0), 2)
-    cv2.line(image, (x + line_px, y - 4), (x + line_px, y + 4), (255, 255, 0), 2)
-    
-    # Draw border outline
-    cv2.rectangle(image, (x - pad, y - pad), (x + line_px + pad, y + 25), (255, 255, 0), 1)
-    
-    # Label text
-    cv2.putText(image, "3.0 in (0.0762m) scale", (x, y + 18), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-    
-    return image
+    bar_px = int(round(px_per_cm * THREE_INCHES_IN_CM))
+    if bar_px <= 0:
+        return image
 
-# =====================================================================
-# ADDITIONAL CALIBRATION & EXPORT HELPERS
-# =====================================================================
+    label = "Scale: 3.0 in (0.0762 m)"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    thickness = 1
+    text_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
 
-def scale_from_reference_line(pixel_length, real_world_inches=3.0):
-    """Converts pixel line length to Pixels per Meter scale factor."""
-    meters = real_world_inches * 0.0254
-    pixels_per_meter = pixel_length / meters
-    print(f"[INFO] 3-inch line registered: {pixel_length}px = {meters:.4f}m.")
-    return pixels_per_meter
+    pad = 12
+    gap = 10
+    line_height = 14
+    box_w = max(bar_px, text_size[0]) + pad * 2
+    box_h = text_size[1] + gap + line_height + pad * 2
+
+    height, width = image.shape[:2]
+    x2 = max(pad, width - pad)
+    y2 = max(pad, height - pad)
+    x1 = max(pad, x2 - box_w)
+    y1 = max(pad, y2 - box_h)
+
+    overlay = image.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (25, 25, 25), -1)
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 1)
+
+    line_x1 = x1 + pad
+    line_y = y1 + pad + 8
+    line_x2 = line_x1 + bar_px
+
+    cv2.line(overlay, (line_x1, line_y), (line_x2, line_y), color, 2, cv2.LINE_AA)
+    cv2.line(overlay, (line_x1, line_y - 4), (line_x1, line_y + 4), color, 2, cv2.LINE_AA)
+    cv2.line(overlay, (line_x2, line_y - 4), (line_x2, line_y + 4), color, 2, cv2.LINE_AA)
+
+    cv2.putText(overlay, label, (x1 + pad, line_y + text_size[1] + 10), font,
+                font_scale, color, thickness, cv2.LINE_AA)
+
+    return overlay
 
 
 def undistort_image(image, camera_matrix=None, dist_coeffs=None):

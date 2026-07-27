@@ -1,0 +1,1 @@
+"""Core stain-analysis package."""

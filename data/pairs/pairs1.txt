@@ -1,0 +1,2 @@
+data/images/processed/DSC_1118.JPG	data/images/processed/DSC_1122.JPG
+data/images/processed/DSC_1121.JPG	data/images/processed/DSC_1124.JPG

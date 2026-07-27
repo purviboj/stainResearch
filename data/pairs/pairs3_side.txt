@@ -1,0 +1,4 @@
+data/images/processed/real_stain_images_3/00min_side_pre.png	data/images/processed/real_stain_images_3/00min_side_post.png
+data/images/processed/real_stain_images_3/10min_side_pre.png	data/images/processed/real_stain_images_3/10min_side_post.png
+data/images/processed/real_stain_images_3/20min_side_pre.png	data/images/processed/real_stain_images_3/20min_side_post.png
+data/images/processed/real_stain_images_3/30min_side_pre.png	data/images/processed/real_stain_images_3/30min_side_post.png
