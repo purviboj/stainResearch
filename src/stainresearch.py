@@ -1258,9 +1258,6 @@ def main():
         parser.print_help()
 
 
-if __name__ == "__main__":
-    main()
-
 # =====================================================================
 # 3-INCH REFERENCE LINE & SCALE OVERLAY
 # =====================================================================
@@ -1456,3 +1453,7 @@ def export_contour_points(contour, pixels_per_meter, output_dir="data", base_fil
         writer.writeheader()
         writer.writerows(data_out)
     return json_path, csv_path
+
+
+if __name__ == "__main__":
+    main()
