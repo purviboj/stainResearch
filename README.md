@@ -82,6 +82,16 @@ python3 src/stainresearch.py \
 
 Use the interactive tuner to isolate the stain, then press `s` to print settings and `q` or `n` to continue. For difficult photos, use `--roi x,y,width,height` to crop analysis to the stain area.
 
+## Measure video stain shrinkage
+
+To analyze the first and last frame of the PusherV3 videos, download and extract the supplied `Visualization-PusherV3.zip` into `analysis_data/`, then run:
+
+```bash
+python3 analysis_data/measure_stain_shrinkage.py
+```
+
+The script writes per-video measurements to `analysis_results/shrinkage_measurements.csv`, trial averages to `analysis_results/trial_summary.csv`, and annotated before/after images to `analysis_results/`. The X and Y ratios are final pixel dimensions divided by initial pixel dimensions, so `0.5` means the stain ended at half its starting size. The ZIP data and generated results are intentionally kept outside Git because the video archive is large.
+
 ## Benchmarking and validation
 
 Each CLI run writes `benchmark_results.csv` alongside `stain_results.csv`. The benchmark log records one row per image: detection status, processing time, actual stain count, and correctness.
@@ -102,4 +112,3 @@ python3 src/stainresearch.py \
 The terminal reports image count, average processing time, detection accuracy for labelled images, and estimated time saved over manual analysis. This is a single-primary-stain detector, so the present accuracy metric is appropriate when actual count is `0` or `1`.
 
 See [docs/IMAGE_KEY_1_2.md](docs/IMAGE_KEY_1_2.md) and [docs/IMAGE_KEY.md](docs/IMAGE_KEY.md) for the dataset keys and pair definitions.
-
