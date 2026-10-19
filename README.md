@@ -92,6 +92,16 @@ python3 analysis_data/measure_stain_shrinkage.py
 
 The script writes per-video measurements to `analysis_results/shrinkage_measurements.csv`, trial averages to `analysis_results/trial_summary.csv`, and annotated before/after images to `analysis_results/`. The X and Y ratios are final pixel dimensions divided by initial pixel dimensions, so `0.5` means the stain ended at half its starting size. The ZIP data and generated results are intentionally kept outside Git because the video archive is large.
 
+For a flat video folder or a separate dataset, specify the input and output folders explicitly:
+
+```bash
+python3 analysis_data/measure_stain_shrinkage.py \
+  --input-root /absolute/path/to/videos \
+  --output-root /absolute/path/to/results
+```
+
+Video filenames are processed in numerical order, and both flat folders and nested trial folders are supported.
+
 ## Benchmarking and validation
 
 Each CLI run writes `benchmark_results.csv` alongside `stain_results.csv`. The benchmark log records one row per image: detection status, processing time, actual stain count, and correctness.

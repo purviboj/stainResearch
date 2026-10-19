@@ -1,4 +1,6 @@
 import csv
+import argparse
+import re
 import statistics
 from pathlib import Path
 
@@ -53,13 +55,32 @@ def annotate(image, bbox, label):
     return result
 
 
+def video_sort_key(video_path):
+    numbers = re.findall(r"\d+", video_path.stem)
+    return tuple(int(number) for number in numbers), video_path.name.lower()
+
+
+def find_videos(root):
+    videos = sorted(
+        (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in {".mov", ".mp4"}),
+        key=video_sort_key,
+    )
+    return videos
+
+
 def main():
-    frames_root = OUTPUT_ROOT / "frames"
-    pairs_root = OUTPUT_ROOT / "pairs"
+    parser = argparse.ArgumentParser(description="Measure stain size change between first and last video frames.")
+    parser.add_argument("--input-root", type=Path, default=INPUT_ROOT)
+    parser.add_argument("--output-root", type=Path, default=OUTPUT_ROOT)
+    args = parser.parse_args()
+    input_root = args.input_root
+    output_root = args.output_root
+    frames_root = output_root / "frames"
+    pairs_root = output_root / "pairs"
     frames_root.mkdir(parents=True, exist_ok=True)
     pairs_root.mkdir(parents=True, exist_ok=True)
     rows = []
-    videos = sorted(p for p in INPUT_ROOT.glob("*/*") if p.suffix.lower() in {".mov", ".mp4"})
+    videos = find_videos(input_root)
     for video_path in videos:
         first = read_frame(video_path, 0)
         last = read_frame(video_path, -1)
@@ -68,7 +89,7 @@ def main():
             continue
         first_bbox = stain_bbox(first)
         last_bbox = stain_bbox(last)
-        trial = video_path.parent.name
+        trial = video_path.parent.name if video_path.parent != input_root else input_root.name
         stem = f"{trial[:1]}_{video_path.stem}"
         cv2.imwrite(str(frames_root / f"{stem}_first_annotated.jpg"), annotate(first, first_bbox, "BEFORE"))
         cv2.imwrite(str(frames_root / f"{stem}_last_annotated.jpg"), annotate(last, last_bbox, "AFTER"))
@@ -98,7 +119,7 @@ def main():
     fieldnames.remove("trial")
     fieldnames.remove("video")
     fieldnames = ["trial", "video"] + fieldnames
-    with (OUTPUT_ROOT / "shrinkage_measurements.csv").open("w", newline="") as handle:
+    with (output_root / "shrinkage_measurements.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
@@ -117,7 +138,7 @@ def main():
             "y_ratio_mean": round(statistics.mean(y_values), 5),
             "y_ratio_median": round(statistics.median(y_values), 5),
         })
-    with (OUTPUT_ROOT / "trial_summary.csv").open("w", newline="") as handle:
+    with (output_root / "trial_summary.csv").open("w", newline="") as handle:
         summary_fields = ["trial", "video_count", "x_ratio_mean", "x_ratio_median", "y_ratio_mean", "y_ratio_median"]
         writer = csv.DictWriter(handle, fieldnames=summary_fields)
         writer.writeheader()
